@@ -118,6 +118,13 @@
                     "action": "retransmit_oldest_unacked_segment",
                     "next_state": "ESTABLISHED",
                     "documentation": "Timeout for data segment. Retransmits the oldest unacknowledged segment."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_new_ack",
+                    "action": "process_new_ack",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Receives a new, non-duplicate ACK. Updates RTT and stops/restarts timer."
                 }
             ]
         },
