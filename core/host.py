@@ -13,6 +13,9 @@ class Host:
         self.duplicate_ack_count = 0
         self.unacked_segments = []
         self.fsm = FSMEngine(fsm_path, self, bus, host_name=name)
+        self.estimated_rtt = None
+        self.dev_rtt = 0
+        self.timeout_interval = 10
 
     # TCP
     def initialize_variables(self, data=None):
@@ -157,3 +160,58 @@ class Host:
             "checksum": calculate_checksum(data)
         }
         self.channel.send(datagram, sender=self, receiver=self.peer)
+    # --- RTT e Timer Dinâmico (Requisito 4.4) ---
+    def update_rtt(self, sample_rtt):
+        """Calcula o RTT baseado nas fórmulas do TCP (RFC 6298 / Kurose)"""
+        if self.estimated_rtt is None:
+            self.estimated_rtt = sample_rtt
+            self.dev_rtt = sample_rtt / 2
+        else:
+            alpha = 0.125
+            beta = 0.25
+            self.estimated_rtt = (1 - alpha) * self.estimated_rtt + alpha * sample_rtt
+            self.dev_rtt = (1 - beta) * self.dev_rtt + beta * abs(sample_rtt - self.estimated_rtt)
+        
+        # Timeout = EstimatedRTT + 4 * DevRTT
+        self.timeout_interval = max(1, int(self.estimated_rtt + 4 * self.dev_rtt))
+
+    def send_data_segment_and_start_timer(self, data=None):
+        if self.peer is None: raise ValueError("peer is required")
+        
+        segment = {"type": "DATA", "payload": data, "src": self.name, "dst": self.peer.name, "seq": self.seq_num}
+        
+        # Armazena o pacote JUNTO COM O TIMESTAMP de envio para calcular o SampleRTT
+        self.unacked_segments.append({
+            "segment": segment,
+            "send_time": self.bus.clock.get_time()
+        })
+        
+        self.seq_num += len(data) if data else 1
+        self.channel.send(segment, sender=self, receiver=self.peer)
+        
+        timer_name = f"data_timeout_{self.name}"
+        self.bus.clock.set_timer(self.timeout_interval, lambda: self.fsm.process_event("timeout", {"type": "DATA_TIMEOUT"}), timer_name)
+
+    def is_new_ack(self, packet):
+        return self.is_ack(packet) and not self.is_duplicate_ack_3(packet)
+
+    def process_new_ack(self, packet):
+        """Processa a chegada de um ACK, atualiza o RTT e desliza a janela"""
+        ack_received = packet.get("ack_num")
+        
+        # Identifica pacotes que acabaram de ser confirmados
+        acknowledged = [item for item in self.unacked_segments if item["segment"]["seq"] < ack_received]
+        # Remove os confirmados do buffer
+        self.unacked_segments = [item for item in self.unacked_segments if item["segment"]["seq"] >= ack_received]
+        
+        if acknowledged:
+            # Pega no pacote mais recente confirmado neste ACK para medir o SampleRTT
+            sample_rtt = self.bus.clock.get_time() - acknowledged[-1]["send_time"]
+            self.update_rtt(sample_rtt)
+            
+            # Cancela o timer antigo e reinicia se ainda houver pacotes em trânsito
+            timer_name = f"data_timeout_{self.name}"
+            self.bus.clock.cancel_timer(timer_name)
+            
+            if self.unacked_segments:
+                self.bus.clock.set_timer(self.timeout_interval, lambda: self.fsm.process_event("timeout", {"type": "DATA_TIMEOUT"}), timer_name)
