@@ -1,0 +1,198 @@
+{
+    "protocol": "TCP",
+    "description": "Transmission Control Protocol FSM definition including connection management and data transfer.",
+    "initial_state": "CLOSED",
+    "states": {
+        "CLOSED": {
+            "transitions": [
+                {
+                    "event": "app_passive_open",
+                    "condition": null,
+                    "action": "initialize_variables",
+                    "next_state": "LISTEN",
+                    "documentation": "Server application opens a socket for listening."
+                },
+                {
+                    "event": "app_active_open",
+                    "condition": null,
+                    "action": "send_syn_segment",
+                    "next_state": "SYN_SENT",
+                    "documentation": "Client application initiates a connection by sending a SYN segment."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_dest_port_closed",
+                    "action": "send_rst_segment",
+                    "next_state": "CLOSED",
+                    "documentation": "Connection attempt to a closed port. Replies with a RST segment."
+                }
+            ]
+        },
+        "LISTEN": {
+            "transitions": [
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_syn",
+                    "action": "send_syn_ack_segment",
+                    "next_state": "SYN_RCVD",
+                    "documentation": "Receives a SYN segment. Responds with a SYN-ACK segment."
+                }
+            ]
+        },
+        "SYN_SENT": {
+            "transitions": [
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_syn_ack",
+                    "action": "send_ack_segment",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Receives SYN-ACK. Responds with an ACK segment. Handshake complete for client."
+                },
+                {
+                    "event": "timeout",
+                    "condition": "is_syn_timeout",
+                    "action": "resend_syn_segment",
+                    "next_state": "SYN_SENT",
+                    "documentation": "Timeout while waiting for SYN-ACK. Retransmits the SYN segment."
+                }
+            ]
+        },
+        "SYN_RCVD": {
+            "transitions": [
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_ack",
+                    "action": "do_nothing",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Receives ACK. Handshake complete for server."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_syn",
+                    "action": "send_syn_ack_segment",
+                    "next_state": "SYN_RCVD",
+                    "documentation": "Receives duplicate SYN. Responds with SYN-ACK again."
+                }
+            ]
+        },
+        "ESTABLISHED": {
+            "transitions": [
+                {
+                    "event": "app_close",
+                    "condition": null,
+                    "action": "send_fin_segment",
+                    "next_state": "FIN_WAIT_1",
+                    "documentation": "Application initiates connection teardown. Sends FIN segment."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_fin",
+                    "action": "send_ack_segment",
+                    "next_state": "CLOSE_WAIT",
+                    "documentation": "Receives FIN from the other side. Responds with ACK."
+                },
+                {
+                    "event": "app_send_data",
+                    "condition": null,
+                    "action": "send_data_segment_and_start_timer",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Application sends data. Sends TCP segment and manages timer."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_valid_data",
+                    "action": "send_cumulative_ack",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Receives valid data segment. Sends cumulative ACK."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_duplicate_ack_3",
+                    "action": "fast_retransmit",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Receives 3 duplicate ACKs. Triggers fast retransmit before timeout."
+                },
+                {
+                    "event": "timeout",
+                    "condition": "is_data_timeout",
+                    "action": "retransmit_oldest_unacked_segment",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Timeout for data segment. Retransmits the oldest unacknowledged segment."
+                }
+            ]
+        },
+        "FIN_WAIT_1": {
+            "transitions": [
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_ack",
+                    "action": "do_nothing",
+                    "next_state": "FIN_WAIT_2",
+                    "documentation": "Receives ACK for the FIN sent previously."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_fin",
+                    "action": "send_ack_segment",
+                    "next_state": "CLOSING",
+                    "documentation": "Receives FIN before receiving ACK for its own FIN. Simultaneous close scenario."
+                }
+            ]
+        },
+        "FIN_WAIT_2": {
+            "transitions": [
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_fin",
+                    "action": "send_ack_and_start_time_wait_timer",
+                    "next_state": "TIME_WAIT",
+                    "documentation": "Receives FIN from the other side. Responds with ACK and starts 2xMSL timer."
+                }
+            ]
+        },
+        "CLOSING": {
+            "transitions": [
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_ack",
+                    "action": "start_time_wait_timer",
+                    "next_state": "TIME_WAIT",
+                    "documentation": "Receives ACK for its FIN during a simultaneous close."
+                }
+            ]
+        },
+        "TIME_WAIT": {
+            "transitions": [
+                {
+                    "event": "timeout",
+                    "condition": "is_2msl_timeout",
+                    "action": "delete_tcb",
+                    "next_state": "CLOSED",
+                    "documentation": "2xMSL timer expires. Connection is fully closed and resources are released."
+                }
+            ]
+        },
+        "CLOSE_WAIT": {
+            "transitions": [
+                {
+                    "event": "app_close",
+                    "condition": null,
+                    "action": "send_fin_segment",
+                    "next_state": "LAST_ACK",
+                    "documentation": "Application finishes reading data and closes. Sends FIN segment."
+                }
+            ]
+        },
+        "LAST_ACK": {
+            "transitions": [
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_ack",
+                    "action": "delete_tcb",
+                    "next_state": "CLOSED",
+                    "documentation": "Receives final ACK. Connection is fully closed."
+                }
+            ]
+        }
+    }
+}

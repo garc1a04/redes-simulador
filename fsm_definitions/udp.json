@@ -1,0 +1,32 @@
+{
+    "protocol": "UDP",
+    "description": "User Datagram Protocol FSM definition with a single state.",
+    "initial_state": "WAIT_FOR_DATA",
+    "states": {
+        "WAIT_FOR_DATA": {
+            "transitions": [
+                {
+                    "event": "app_send_data",
+                    "condition": null,
+                    "action": "create_datagram_and_send",
+                    "next_state": "WAIT_FOR_DATA",
+                    "documentation": "Triggered when the application sends data. It creates a datagram with origin/destination ports, length, and checksum, then sends it down the simulated channel."
+                },
+                {
+                    "event": "channel_receive_datagram",
+                    "condition": "is_checksum_valid",
+                    "action": "extract_and_deliver_to_app",
+                    "next_state": "WAIT_FOR_DATA",
+                    "documentation": "Triggered when a datagram arrives and the 16-bit 1s complement checksum is valid. Delivers data up to the application layer."
+                },
+                {
+                    "event": "channel_receive_datagram",
+                    "condition": "is_checksum_invalid",
+                    "action": "discard_datagram_silently",
+                    "next_state": "WAIT_FOR_DATA",
+                    "documentation": "Triggered when a datagram arrives but the checksum validation fails. Discards the segment silently without notifying the sender."
+                }
+            ]
+        }
+    }
+}

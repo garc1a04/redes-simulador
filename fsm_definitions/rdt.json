@@ -1,0 +1,79 @@
+{
+    "protocol": "RDT_3_0_SENDER",
+    "description": "Reliable Data Transfer 3.0 Sender FSM definition.",
+    "initial_state": "WAIT_FOR_CALL_FROM_ABOVE_0",
+    "states": {
+        "WAIT_FOR_CALL_FROM_ABOVE_0": {
+            "transitions": [
+                {
+                    "event": "app_send_data",
+                    "condition": null,
+                    "action": "make_pkt_send_and_start_timer_0",
+                    "next_state": "WAIT_FOR_ACK_0",
+                    "documentation": "Application sends data. Creates packet with sequence number 0, sends it, and starts the retransmission timer."
+                },
+                {
+                    "event": "channel_receive_packet",
+                    "condition": null,
+                    "action": "do_nothing",
+                    "next_state": "WAIT_FOR_CALL_FROM_ABOVE_0",
+                    "documentation": "Ignores delayed ACKs received in this state."
+                }
+            ]
+        },
+        "WAIT_FOR_ACK_0": {
+            "transitions": [
+                {
+                    "event": "channel_receive_packet",
+                    "condition": "is_ack_0_and_not_corrupt",
+                    "action": "stop_timer",
+                    "next_state": "WAIT_FOR_CALL_FROM_ABOVE_1",
+                    "documentation": "Receives the correct ACK (0) without corruption. Stops the timer and moves to wait for new data for sequence 1."
+                },
+                {
+                    "event": "channel_receive_packet",
+                    "condition": "is_corrupt_or_is_ack_1",
+                    "action": "do_nothing",
+                    "next_state": "WAIT_FOR_ACK_0",
+                    "documentation": "Receives a corrupted packet or the wrong ACK. Does nothing and waits for the timeout."
+                },
+                {
+                    "event": "timeout",
+                    "condition": null,
+                    "action": "resend_pkt_and_restart_timer_0",
+                    "next_state": "WAIT_FOR_ACK_0",
+                    "documentation": "Timer expires. Retransmits the packet with sequence number 0 and restarts the timer."
+                }
+            ]
+        },
+        "WAIT_FOR_CALL_FROM_ABOVE_1": {
+            "transitions": [
+                {
+                    "event": "app_send_data",
+                    "condition": null,
+                    "action": "make_pkt_send_and_start_timer_1",
+                    "next_state": "WAIT_FOR_ACK_1",
+                    "documentation": "Application sends data. Creates packet with sequence number 1, sends it, and starts the retransmission timer."
+                }
+            ]
+        },
+        "WAIT_FOR_ACK_1": {
+            "transitions": [
+                {
+                    "event": "channel_receive_packet",
+                    "condition": "is_ack_1_and_not_corrupt",
+                    "action": "stop_timer",
+                    "next_state": "WAIT_FOR_CALL_FROM_ABOVE_0",
+                    "documentation": "Receives the correct ACK (1). Stops timer and goes back to state 0."
+                },
+                {
+                    "event": "timeout",
+                    "condition": null,
+                    "action": "resend_pkt_and_restart_timer_1",
+                    "next_state": "WAIT_FOR_ACK_1",
+                    "documentation": "Timer expires. Retransmits packet 1."
+                }
+            ]
+        }
+    }
+}
