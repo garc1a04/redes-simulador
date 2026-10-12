@@ -13,6 +13,7 @@ class Host:
         self.seq_num = 0
         self.ack_num = 0
         self.duplicate_ack_count = 0
+        self.last_received_ack_num = -1
         self.unacked_segments = []
         
         # Variáveis do temporizador dinâmico RTT
@@ -30,44 +31,67 @@ class Host:
         self.seq_num = 0
         self.ack_num = 0
         self.duplicate_ack_count = 0
+        self.last_received_ack_num = -1
         self.unacked_segments = []
         self.app_buffer = []
+
+    # ==========================================
+    # TCP - AUXILIARES DE CORRUPÇÃO E VALIDAÇÃO
+    # ==========================================
+    def is_corrupted(self, packet):
+        if not isinstance(packet, dict):
+            return True
+        if packet.get("corrupted", False):
+            return True
+        if "checksum" in packet and "data" in packet:
+            return not self.is_checksum_valid(packet)
+        return False
 
     # ==========================================
     # TCP - CONDIÇÕES (Retornam True/False)
     # ==========================================
     def is_syn(self, packet):
-        return isinstance(packet, dict) and packet.get("type") == "SYN"
+        return isinstance(packet, dict) and not self.is_corrupted(packet) and packet.get("type") == "SYN"
 
     def is_syn_ack(self, packet):
-        return isinstance(packet, dict) and packet.get("type") == "SYN-ACK"
+        return isinstance(packet, dict) and not self.is_corrupted(packet) and packet.get("type") == "SYN-ACK"
 
     def is_ack(self, packet):
-        return isinstance(packet, dict) and packet.get("type") == "ACK"
+        return isinstance(packet, dict) and not self.is_corrupted(packet) and packet.get("type") == "ACK"
 
     def is_fin(self, packet):
-        return isinstance(packet, dict) and packet.get("type") == "FIN"
+        return isinstance(packet, dict) and not self.is_corrupted(packet) and packet.get("type") == "FIN"
 
     def is_dest_port_closed(self, packet):
-        return isinstance(packet, dict) and packet.get("dst_port") == "CLOSED"
+        return isinstance(packet, dict) and not self.is_corrupted(packet) and packet.get("dst_port") == "CLOSED"
 
     def is_valid_data(self, packet):
-        return isinstance(packet, dict) and packet.get("type") == "DATA"
+        return isinstance(packet, dict) and not self.is_corrupted(packet) and packet.get("type") == "DATA"
 
     def is_new_ack(self, packet):
-        return self.is_ack(packet) and not self.is_duplicate_ack_3(packet)
+        if not self.is_ack(packet):
+            return False
+        
+        ack_num = packet.get("ack_num")
+        if ack_num is None:
+            return False
+        
+        # Um novo ACK avança a sequência em relação ao último recebido
+        if ack_num > self.last_received_ack_num or self.last_received_ack_num == -1:
+            self.last_received_ack_num = ack_num
+            self.duplicate_ack_count = 0
+            return True
+        return False
 
     def is_duplicate_ack_3(self, packet):
-        # Correção: Só faz sentido contar ACKs duplicados para retransmissão rápida
-        # se tivermos efetivamente enviado dados que aguardam confirmação!
-        if len(self.unacked_segments) == 0:
+        if not self.is_ack(packet) or len(self.unacked_segments) == 0:
             self.duplicate_ack_count = 0
             return False
 
-        if self.is_ack(packet):
-            if packet.get("ack_num") == self.ack_num:
-                self.duplicate_ack_count += 1
-                return self.duplicate_ack_count >= 3
+        ack_num = packet.get("ack_num")
+        if ack_num is not None and ack_num == self.last_received_ack_num:
+            self.duplicate_ack_count += 1
+            return self.duplicate_ack_count >= 3
         return False
 
     # Filtros Rigorosos de Timeouts
@@ -88,7 +112,7 @@ class Host:
     # ==========================================
     def handle_syn(self, packet):
         if self.peer is None: raise ValueError("peer is required")
-        self.fsm.current_state = "SYN_RCVD"
+        # Transição de estado tratada estritamente pelo FSMEngine (JSON)
         self.ack_num = 1
         self.send_syn_ack_segment()
 
@@ -96,12 +120,13 @@ class Host:
         if self.peer is None: raise ValueError("peer is required")
         timer_name = f"syn_timeout_{self.name}"
         self.bus.clock.cancel_timer(timer_name)
-        self.fsm.current_state = "ESTABLISHED"
+        # Transição de estado tratada estritamente pelo FSMEngine (JSON)
         self.send_ack_segment()
 
     def handle_ack(self, packet):
-        self.fsm.current_state = "ESTABLISHED"
-        self.bus.clock.cancel_timer(f"syn_timeout_{self.name}")
+        # Transição de estado tratada estritamente pelo FSMEngine (JSON)
+        timer_name = f"syn_timeout_{self.name}"
+        self.bus.clock.cancel_timer(timer_name)
 
     def send_syn_segment(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
@@ -159,7 +184,8 @@ class Host:
 
     def start_time_wait_timer(self, data=None):
         self.cancel_all_timers()
-        self.bus.clock.set_timer(20, lambda: self.fsm.process_event("timeout", {"type": "2MSL_TIMEOUT"}), "2msl_timeout")
+        timer_name = f"2msl_timeout_{self.name}"
+        self.bus.clock.set_timer(20, lambda: self.fsm.process_event("timeout", {"type": "2MSL_TIMEOUT"}), timer_name)
     
     def delete_tcb(self, data=None):
         self.cancel_all_timers()
@@ -169,7 +195,8 @@ class Host:
     # TCP - TRANSFERÊNCIA DE DADOS (COM RTT)
     # ==========================================
     def update_rtt(self, sample_rtt):
-        if self.estimated_rtt is None:
+        # Verifica se não existe OU se é None
+        if getattr(self, 'estimated_rtt', None) is None:
             self.estimated_rtt = sample_rtt
             self.dev_rtt = sample_rtt / 2
         else:
@@ -177,8 +204,10 @@ class Host:
             beta = 0.25
             self.estimated_rtt = (1 - alpha) * self.estimated_rtt + alpha * sample_rtt
             self.dev_rtt = (1 - beta) * self.dev_rtt + beta * abs(sample_rtt - self.estimated_rtt)
-        
-        self.timeout_interval = max(1, int(self.estimated_rtt + 4 * self.dev_rtt))
+            
+        # Calcula o intervalo com piso mínimo de 50 ticks para evitar retransmissões prematuras
+        calculated_timeout = int(self.estimated_rtt + 4 * self.dev_rtt)
+        self.timeout_interval = max(50, calculated_timeout)
 
     def send_data_segment_and_start_timer(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
@@ -198,8 +227,13 @@ class Host:
 
     def process_new_ack(self, packet):
         ack_received = packet.get("ack_num")
+        if ack_received is None:
+            return
         
+        # Todos os segmentos com 'seq' menor que o ACK recebido foram entregues com sucesso
         acknowledged = [item for item in self.unacked_segments if item["segment"]["seq"] < ack_received]
+        
+        # Mantém na janela apenas os que ainda não foram confirmados
         self.unacked_segments = [item for item in self.unacked_segments if item["segment"]["seq"] >= ack_received]
         
         if acknowledged:
@@ -208,14 +242,27 @@ class Host:
             self.update_rtt(sample_rtt)
             
             timer_name = f"data_timeout_{self.name}"
-            self.bus.clock.cancel_timer(timer_name)
             
+            # Se a janela de pacotes não confirmados não estiver vazia, reinicia o temporizador
             if self.unacked_segments:
                 self.bus.clock.set_timer(self.timeout_interval, lambda: self.fsm.process_event("timeout", {"type": "DATA_TIMEOUT"}), timer_name)
 
-    def send_cumulative_ack(self, data=None):
+    def send_cumulative_ack(self, packet=None):
         if self.peer is None: raise ValueError("peer is required")
-        self.ack_num += 1
+        
+        # O argumento 'packet' (passado pelo motor FSM) contém o segmento recebido
+        if isinstance(packet, dict) and "seq" in packet:
+            payload = packet.get("payload")
+            payload_len = len(payload) if payload else 1
+            
+            # O ACK em TCP indica o PRÓXIMO byte/sequência que o Host espera receber
+            expected_seq = packet["seq"] + payload_len
+            
+            # Atualiza o ack_num apenas se o pacote recebido avançar a janela
+            self.ack_num = max(self.ack_num, expected_seq)
+        else:
+            self.ack_num += 1
+            
         self.duplicate_ack_count = 0 
         self.send_ack_segment()
 
@@ -226,7 +273,6 @@ class Host:
     def retransmit_oldest_unacked_segment(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
         if self.unacked_segments:
-            # Correção: Extrai apenas a chave "segment" do dicionário de dados não confirmados
             oldest_item = self.unacked_segments[0]
             segment_to_send = oldest_item["segment"] if isinstance(oldest_item, dict) and "segment" in oldest_item else oldest_item
             
@@ -236,13 +282,17 @@ class Host:
     # UDP
     # ==========================================
     def is_checksum_valid(self, packet):
-        return isinstance(packet, dict) and "checksum" in packet and packet["checksum"] == calculate_checksum(packet["data"])
+        return (isinstance(packet, dict) and 
+                not packet.get("corrupted", False) and 
+                "checksum" in packet and 
+                packet["checksum"] == calculate_checksum(packet.get("data", "")))
 
     def is_checksum_invalid(self, packet):
         return not self.is_checksum_valid(packet)
 
     def extract_and_deliver_to_app(self, packet):
-        self.app_buffer.append(packet["data"])
+        if isinstance(packet, dict) and "data" in packet:
+            self.app_buffer.append(packet["data"])
         return True
 
     def discard_datagram_silently(self, packet):
@@ -267,7 +317,9 @@ class Host:
         timer_syn = f"syn_timeout_{self.name}"
         timer_fin = f"fin_timeout_{self.name}"
         timer_data = f"data_timeout_{self.name}"
+        timer_2msl = f"2msl_timeout_{self.name}"
         
         self.bus.clock.cancel_timer(timer_syn)
         self.bus.clock.cancel_timer(timer_fin)
         self.bus.clock.cancel_timer(timer_data)
+        self.bus.clock.cancel_timer(timer_2msl)
