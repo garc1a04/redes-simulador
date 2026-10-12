@@ -63,10 +63,19 @@ class SequenceDiagramWidget(QWidget):
             end_x = x_b if msg["src"] == "A" else x_a
             
             is_lost = msg["status"] == "lost"
+            is_retransmitted = msg["status"] == "retransmitted"
+            
             actual_end_x = (start_x + end_x) / 2 if is_lost else end_x
             end_y = y + 20
 
-            color = QColor(220, 50, 50) if is_lost else QColor(50, 100, 220)
+            # Lógica de seleção de cores baseada no status
+            if is_lost:
+                color = QColor(220, 50, 50)  # Vermelho para falha/perda
+            elif is_retransmitted:
+                color = QColor(255, 140, 0)  # Laranja para retransmissões
+            else:
+                color = QColor(50, 100, 220) # Azul para sucesso normal
+                
             pen = QPen(color, 2, Qt.SolidLine)
             painter.setPen(pen)
 
