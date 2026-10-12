@@ -1,6 +1,6 @@
 {
     "protocol": "TCP",
-    "description": "Transmission Control Protocol FSM definition including connection management and data transfer.",
+    "description": "Máquina de Estados Finitos (FSM) impecável para o TCP, contemplando Handshake, Transferência de Dados, Teardown e Fechamento Simultâneo.",
     "initial_state": "CLOSED",
     "states": {
         "CLOSED": {
@@ -10,21 +10,28 @@
                     "condition": null,
                     "action": "initialize_variables",
                     "next_state": "LISTEN",
-                    "documentation": "Server application opens a socket for listening."
+                    "documentation": "Servidor abre o socket para escuta passiva."
                 },
                 {
                     "event": "app_active_open",
                     "condition": null,
                     "action": "send_syn_segment",
                     "next_state": "SYN_SENT",
-                    "documentation": "Client application initiates a connection by sending a SYN segment."
+                    "documentation": "Cliente inicia a conexão enviando SYN."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_fin",
+                    "action": "send_ack_segment",
+                    "next_state": "CLOSED",
+                    "documentation": "Responde com ACK a FINs perdidos/retransmitidos pelo par que ainda está em LAST_ACK."
                 },
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_dest_port_closed",
                     "action": "send_rst_segment",
                     "next_state": "CLOSED",
-                    "documentation": "Connection attempt to a closed port. Replies with a RST segment."
+                    "documentation": "Conexão para uma porta fechada gera um Reset (RST)."
                 }
             ]
         },
@@ -35,7 +42,7 @@
                     "condition": "is_syn",
                     "action": "send_syn_ack_segment",
                     "next_state": "SYN_RCVD",
-                    "documentation": "Receives a SYN segment. Responds with a SYN-ACK segment."
+                    "documentation": "Recebe SYN e responde com SYN-ACK."
                 }
             ]
         },
@@ -46,14 +53,14 @@
                     "condition": "is_syn_ack",
                     "action": "send_ack_segment",
                     "next_state": "ESTABLISHED",
-                    "documentation": "Receives SYN-ACK. Responds with an ACK segment. Handshake complete for client."
+                    "documentation": "Recebe SYN-ACK, envia ACK final e conclui Handshake."
                 },
                 {
                     "event": "timeout",
                     "condition": "is_syn_timeout",
                     "action": "resend_syn_segment",
                     "next_state": "SYN_SENT",
-                    "documentation": "Timeout while waiting for SYN-ACK. Retransmits the SYN segment."
+                    "documentation": "Timeout do SYN. Retransmite."
                 }
             ]
         },
@@ -62,16 +69,23 @@
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_ack",
-                    "action": "do_nothing",
+                    "action": "handle_ack",
                     "next_state": "ESTABLISHED",
-                    "documentation": "Receives ACK. Handshake complete for server."
+                    "documentation": "Recebe o ACK final. A ação 'handle_ack' cancela o temporizador de SYN pendente."
                 },
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_syn",
                     "action": "send_syn_ack_segment",
                     "next_state": "SYN_RCVD",
-                    "documentation": "Receives duplicate SYN. Responds with SYN-ACK again."
+                    "documentation": "Recebe SYN duplicado e responde com novo SYN-ACK."
+                },
+                {
+                    "event": "timeout",
+                    "condition": "is_syn_timeout",
+                    "action": "resend_syn_ack_segment",
+                    "next_state": "SYN_RCVD",
+                    "documentation": "Timeout aguardando o ACK do cliente. Retransmite SYN-ACK."
                 }
             ]
         },
@@ -82,49 +96,56 @@
                     "condition": null,
                     "action": "send_fin_segment",
                     "next_state": "FIN_WAIT_1",
-                    "documentation": "Application initiates connection teardown. Sends FIN segment."
+                    "documentation": "Aplicação solicita encerramento. Envia FIN."
                 },
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_fin",
                     "action": "send_ack_segment",
                     "next_state": "CLOSE_WAIT",
-                    "documentation": "Receives FIN from the other side. Responds with ACK."
+                    "documentation": "Recebe o FIN do outro lado e responde com ACK."
                 },
                 {
                     "event": "app_send_data",
                     "condition": null,
                     "action": "send_data_segment_and_start_timer",
                     "next_state": "ESTABLISHED",
-                    "documentation": "Application sends data. Sends TCP segment and manages timer."
+                    "documentation": "Aplicação envia dados."
                 },
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_valid_data",
                     "action": "send_cumulative_ack",
                     "next_state": "ESTABLISHED",
-                    "documentation": "Receives valid data segment. Sends cumulative ACK."
+                    "documentation": "Recebe dados válidos e envia ACK cumulativo."
                 },
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_duplicate_ack_3",
                     "action": "fast_retransmit",
                     "next_state": "ESTABLISHED",
-                    "documentation": "Receives 3 duplicate ACKs. Triggers fast retransmit before timeout."
+                    "documentation": "Recebe 3 ACKs duplicados. Dispara retransmissão rápida."
                 },
                 {
                     "event": "timeout",
                     "condition": "is_data_timeout",
                     "action": "retransmit_oldest_unacked_segment",
                     "next_state": "ESTABLISHED",
-                    "documentation": "Timeout for data segment. Retransmits the oldest unacknowledged segment."
+                    "documentation": "Timeout de dados. Retransmite o segmento mais antigo."
                 },
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_new_ack",
                     "action": "process_new_ack",
                     "next_state": "ESTABLISHED",
-                    "documentation": "Receives a new, non-duplicate ACK. Updates RTT and stops/restarts timer."
+                    "documentation": "Recebe novo ACK. Atualiza RTT e recomeça o timer."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_syn_ack",
+                    "action": "send_ack_segment",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Trata SYN-ACKs duplicados atrasados na rede."
                 }
             ]
         },
@@ -133,16 +154,23 @@
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_ack",
-                    "action": "do_nothing",
+                    "action": "cancel_fin_timer",
                     "next_state": "FIN_WAIT_2",
-                    "documentation": "Receives ACK for the FIN sent previously."
+                    "documentation": "Recebe ACK para o FIN enviado. Cancela o timer e aguarda o FIN do outro lado."
                 },
                 {
                     "event": "channel_receive_segment",
                     "condition": "is_fin",
                     "action": "send_ack_segment",
                     "next_state": "CLOSING",
-                    "documentation": "Receives FIN before receiving ACK for its own FIN. Simultaneous close scenario."
+                    "documentation": "Fechamento simultâneo: Recebe FIN antes de receber o ACK do seu próprio FIN."
+                },
+                {
+                    "event": "timeout",
+                    "condition": "is_fin_timeout",
+                    "action": "resend_fin_segment",
+                    "next_state": "FIN_WAIT_1",
+                    "documentation": "Timeout do FIN enviado. Retransmite."
                 }
             ]
         },
@@ -153,7 +181,7 @@
                     "condition": "is_fin",
                     "action": "send_ack_and_start_time_wait_timer",
                     "next_state": "TIME_WAIT",
-                    "documentation": "Receives FIN from the other side. Responds with ACK and starts 2xMSL timer."
+                    "documentation": "Recebe o FIN final do outro lado. Envia ACK e entra em espera (2MSL)."
                 }
             ]
         },
@@ -164,7 +192,21 @@
                     "condition": "is_ack",
                     "action": "start_time_wait_timer",
                     "next_state": "TIME_WAIT",
-                    "documentation": "Receives ACK for its FIN during a simultaneous close."
+                    "documentation": "Recebe o ACK que faltava no fechamento simultâneo."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_fin",
+                    "action": "send_ack_segment",
+                    "next_state": "CLOSING",
+                    "documentation": "Trata FINs duplicados enquanto está em CLOSING."
+                },
+                {
+                    "event": "timeout",
+                    "condition": "is_fin_timeout",
+                    "action": "resend_fin_segment",
+                    "next_state": "CLOSING",
+                    "documentation": "Timeout do FIN enviado no fechamento simultâneo."
                 }
             ]
         },
@@ -175,7 +217,14 @@
                     "condition": "is_2msl_timeout",
                     "action": "delete_tcb",
                     "next_state": "CLOSED",
-                    "documentation": "2xMSL timer expires. Connection is fully closed and resources are released."
+                    "documentation": "Timer de 2MSL expirou. Conexão completamente encerrada."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_fin",
+                    "action": "send_ack_segment",
+                    "next_state": "TIME_WAIT",
+                    "documentation": "Recebe FIN duplicado. Reenvia ACK e continua esperando no TIME_WAIT."
                 }
             ]
         },
@@ -186,7 +235,14 @@
                     "condition": null,
                     "action": "send_fin_segment",
                     "next_state": "LAST_ACK",
-                    "documentation": "Application finishes reading data and closes. Sends FIN segment."
+                    "documentation": "Aplicação do servidor finalmente decide fechar a conexão."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_fin",
+                    "action": "send_ack_segment",
+                    "next_state": "CLOSE_WAIT",
+                    "documentation": "Recebe FIN duplicado e reenvia o ACK para garantir."
                 }
             ]
         },
@@ -197,7 +253,14 @@
                     "condition": "is_ack",
                     "action": "delete_tcb",
                     "next_state": "CLOSED",
-                    "documentation": "Receives final ACK. Connection is fully closed."
+                    "documentation": "Recebe o último ACK. TCB deletado e conexão encerrada."
+                },
+                {
+                    "event": "timeout",
+                    "condition": "is_fin_timeout",
+                    "action": "resend_fin_segment",
+                    "next_state": "LAST_ACK",
+                    "documentation": "Timeout do último FIN. Retransmite até receber o ACK final."
                 }
             ]
         }
