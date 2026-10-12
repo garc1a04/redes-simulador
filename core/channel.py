@@ -14,12 +14,18 @@ class SimulatedChannel:
         self.reorder_prob = 0.0
         self.delay_min = 0  
         self.delay_max = 0
-        
+
+        self.drop_next_segment = False
         self.queue = []
 
     def send(self, packet, sender, receiver):
         if receiver is None:
             raise ValueError("receiver is required")
+
+        if self.drop_next_segment:
+            print(f"[Canal] Segmento {packet.get('type', '')} descartado manualmente.")
+            self.drop_next_segment = False
+            return
 
         # 1. Simulação de Perda (Loss)
         if self.random.random() < self.loss_prob:
