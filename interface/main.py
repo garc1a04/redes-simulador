@@ -84,10 +84,10 @@ class SimulatorGUI(QMainWindow):
         controls_layout.addWidget(self.btn_relatorio)
 
         self.slider_speed = QSlider(Qt.Horizontal)
-        self.slider_speed.setRange(1, 20)  # 1 a 20 ticks por segundo
-        self.slider_speed.setValue(5)       # Valor inicial: 5 Ticks/s
+        self.slider_speed.setRange(100, 2000)  
+        self.slider_speed.setValue(1000) # Valor inicial: 1000 ms (1 segundo por tick)
 
-        self.lbl_speed = QLabel("Velocidade: 5 Ticks/s (200 ms/tick)")
+        self.lbl_speed = QLabel("Velocidade: 1.0 Ticks/s (1000 ms/tick)")
         self.slider_speed.valueChanged.connect(self.update_speed)
 
         controls_layout.addWidget(QLabel("Velocidade de Execução:"))
@@ -274,8 +274,8 @@ class SimulatorGUI(QMainWindow):
             self.btn_play.setText("Iniciar Simulação (Auto)")
             self.btn_play.setStyleSheet("")
         else:
-            ticks_per_second = self.slider_speed.value()
-            interval_ms = int(1000 / max(1, ticks_per_second))
+            # Agora lê diretamente o valor em ms do slider
+            interval_ms = self.slider_speed.value()
             self.timer.start(interval_ms)
             self.btn_play.setText("Pausar Simulação")
             self.btn_play.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
@@ -299,7 +299,7 @@ class SimulatorGUI(QMainWindow):
                 log_copy["host"] = prefix + log["host"]
                 all_logs.append(log_copy)
                 
-        all_logs.sort(key=lambda x: x["time"]) # Ordena unificado
+        all_logs.sort(key=lambda x: x["time"])
         
         self.log_table.setRowCount(len(all_logs))
         for row, log in enumerate(all_logs):
@@ -310,7 +310,26 @@ class SimulatorGUI(QMainWindow):
             self.log_table.setItem(row, 4, QTableWidgetItem(str(log.get("action", ""))))
             self.log_table.setItem(row, 5, QTableWidgetItem(log["new_state"]))
             
-        if all_logs: self.log_table.scrollToBottom()
+        if all_logs: 
+            self.log_table.scrollToBottom()
+
+        # --- CORREÇÃO: Atualizar o diagrama visual de estados ---
+        # Só atualiza se o modo lado a lado (que esconde o diagrama de estados) estiver desativado
+        if not self.chk_side_by_side.isChecked() and self.cores:
+            main_core = self.cores[0] # Pega o core em execução na tela
+            
+            # Extrai o estado atual das FSMs do backend
+            state_a = main_core["host_a"].fsm.current_state
+            state_b = main_core["host_b"].fsm.current_state
+            
+            # Monta o texto de feedback da última transição
+            last_transition_text = ""
+            if all_logs:
+                last = all_logs[-1]
+                last_transition_text = f"{last['host']}: {last['old_state']} -> {last['new_state']}"
+                
+            # Envia a ordem de repintar a tela para o widget
+            self.state_canvas.update_states(state_a, state_b, last_transition_text)
 
     def reset_simulation(self):
         if hasattr(self, 'timer') and self.timer.isActive():
@@ -444,8 +463,10 @@ class SimulatorGUI(QMainWindow):
         msg.setWindowTitle("Relatório Comparativo Lado a Lado")
         msg.setText(relatorio)
         msg.exec_()
-    def update_speed(self, ticks_per_second):
-        interval_ms = int(1000 / max(1, ticks_per_second))
+
+    def update_speed(self, interval_ms):
+        # Calcula os ticks por segundo para exibição baseando-se nos milissegundos
+        ticks_per_second = round(1000 / max(1, interval_ms), 1)
         self.lbl_speed.setText(f"Velocidade: {ticks_per_second} Ticks/s ({interval_ms} ms/tick)")
         
         if hasattr(self, 'timer') and self.timer.isActive():

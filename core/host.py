@@ -17,9 +17,9 @@ class Host:
         self.unacked_segments = []
         
         # Variáveis do temporizador dinâmico RTT
-        self.estimated_rtt = None
-        self.dev_rtt = 0
-        self.timeout_interval = 10
+        self.est_rtt = 100.0
+        self.dev_rtt = 25.0
+        self.timeout_interval = 200.0
         
         # FSM
         self.fsm = FSMEngine(fsm_path, self, bus, host_name=name)
@@ -83,15 +83,15 @@ class Host:
             return True
         return False
 
-    def is_duplicate_ack_3(self, packet):
-        if not self.is_ack(packet) or len(self.unacked_segments) == 0:
-            self.duplicate_ack_count = 0
+    def is_duplicate_ack_3(self, event_data):
+        """Gatilho exato para a retransmissão rápida (3º ACK duplicado)."""
+        if not self.is_ack(event_data):
             return False
-
-        ack_num = packet.get("ack_num")
+        
+        ack_num = event_data.get('ack_num')
         if ack_num is not None and ack_num == self.last_received_ack_num:
             self.duplicate_ack_count += 1
-            return self.duplicate_ack_count >= 3
+            return self.duplicate_ack_count == 3
         return False
 
     # Filtros Rigorosos de Timeouts
@@ -112,28 +112,23 @@ class Host:
     # ==========================================
     def handle_syn(self, packet):
         if self.peer is None: raise ValueError("peer is required")
-        # Transição de estado tratada estritamente pelo FSMEngine (JSON)
-        self.ack_num = 1
-        self.send_syn_ack_segment()
+        self.send_syn_ack_segment(packet)
 
     def handle_syn_ack(self, packet):
         if self.peer is None: raise ValueError("peer is required")
-        timer_name = f"syn_timeout_{self.name}"
-        self.bus.clock.cancel_timer(timer_name)
-        # Transição de estado tratada estritamente pelo FSMEngine (JSON)
-        self.send_ack_segment()
+        self.send_ack_segment(packet)
 
     def handle_ack(self, packet):
-        # Transição de estado tratada estritamente pelo FSMEngine (JSON)
         timer_name = f"syn_timeout_{self.name}"
         self.bus.clock.cancel_timer(timer_name)
 
     def send_syn_segment(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
         self.channel.send({"type": "SYN", "src": self.name, "dst": self.peer.name, "seq": self.seq_num}, sender=self, receiver=self.peer)
+        self.seq_num += 1  # SYN consome 1 número de sequência
         
-        # Armar o timer específico do SYN
         timer_name = f"syn_timeout_{self.name}"
+        self.bus.clock.cancel_timer(timer_name)
         self.bus.clock.set_timer(15, lambda: self.fsm.process_event("timeout", {"type": "SYN_TIMEOUT"}), timer_name)
 
     def resend_syn_segment(self, data=None):
@@ -141,17 +136,29 @@ class Host:
 
     def send_syn_ack_segment(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
+        
+        # O FSM mapeia diretamente para esta função. Atualizamos o ack_num baseando no pacote recebido.
+        if isinstance(data, dict) and data.get("type") == "SYN":
+            self.ack_num = data.get("seq", 0) + 1
+        elif self.ack_num == 0:
+            self.ack_num = 1
+            
         self.channel.send({"type": "SYN-ACK", "src": self.name, "dst": self.peer.name, "seq": self.seq_num}, sender=self, receiver=self.peer)
+        self.seq_num += 1  # SYN-ACK consome 1 número de sequência
         
         timer_name = f"syn_timeout_{self.name}"
+        self.bus.clock.cancel_timer(timer_name)
         self.bus.clock.set_timer(15, lambda: self.fsm.process_event("timeout", {"type": "SYN_TIMEOUT"}), timer_name)
 
     def send_ack_segment(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
         
-        # Destruir sempre o timer do SYN ao enviar um ACK (garante o fim limpo do handshake)
         timer_name = f"syn_timeout_{self.name}"
         self.bus.clock.cancel_timer(timer_name)
+        
+        # Se for chamado em resposta a um SYN-ACK ou FIN, atualizamos o ack_num esperado
+        if isinstance(data, dict) and data.get("type") in ["SYN-ACK", "FIN"]:
+            self.ack_num = data.get("seq", 0) + 1
         
         self.channel.send({"type": "ACK", "src": self.name, "dst": self.peer.name, "ack_num": self.ack_num}, sender=self, receiver=self.peer)
 
@@ -160,18 +167,16 @@ class Host:
         self.channel.send({"type": "RST", "src": self.name, "dst": self.peer.name}, sender=self, receiver=self.peer)
 
     def send_fin_segment(self, data=None):
-        if self.peer is None: 
-            raise ValueError("peer is required")
+        if self.peer is None: raise ValueError("peer is required")
         
-        # Envia o pacote FIN
         self.channel.send({"type": "FIN", "src": self.name, "dst": self.peer.name, "seq": self.seq_num}, sender=self, receiver=self.peer)
+        self.seq_num += 1  # FIN consome 1 número de sequência
         
-        # Arma o temporizador de retransmissão do FIN
         timer_name = f"fin_timeout_{self.name}"
+        self.bus.clock.cancel_timer(timer_name)
         self.bus.clock.set_timer(15, lambda: self.fsm.process_event("timeout", {"type": "FIN_TIMEOUT"}), timer_name)
 
     def resend_fin_segment(self, data=None):
-        # Ação chamada caso ocorra timeout aguardando o ACK do FIN
         self.send_fin_segment()
 
     def cancel_fin_timer(self, data=None):
@@ -179,7 +184,7 @@ class Host:
         self.bus.clock.cancel_timer(timer_name)
 
     def send_ack_and_start_time_wait_timer(self, data=None):
-        self.send_ack_segment()
+        self.send_ack_segment(data)
         self.start_time_wait_timer()
 
     def start_time_wait_timer(self, data=None):
@@ -195,20 +200,18 @@ class Host:
     # TCP - TRANSFERÊNCIA DE DADOS (COM RTT)
     # ==========================================
     def update_rtt(self, sample_rtt):
-        # Verifica se não existe OU se é None
-        if getattr(self, 'estimated_rtt', None) is None:
-            self.estimated_rtt = sample_rtt
-            self.dev_rtt = sample_rtt / 2
-        else:
-            alpha = 0.125
-            beta = 0.25
-            self.estimated_rtt = (1 - alpha) * self.estimated_rtt + alpha * sample_rtt
-            self.dev_rtt = (1 - beta) * self.dev_rtt + beta * abs(sample_rtt - self.estimated_rtt)
-            
-        # Calcula o intervalo com piso mínimo de 50 ticks para evitar retransmissões prematuras
-        calculated_timeout = int(self.estimated_rtt + 4 * self.dev_rtt)
-        self.timeout_interval = max(50, calculated_timeout)
-
+            if getattr(self, 'estimated_rtt', None) is None:
+                self.estimated_rtt = sample_rtt
+                self.dev_rtt = sample_rtt / 2
+            else:
+                alpha = 0.125
+                beta = 0.25
+                self.estimated_rtt = (1 - alpha) * self.estimated_rtt + alpha * sample_rtt
+                self.dev_rtt = (1 - beta) * self.dev_rtt + beta * abs(sample_rtt - self.estimated_rtt)
+                
+            calculated_timeout = int(self.estimated_rtt + 4 * self.dev_rtt)
+            # Se 50 ainda for pouco para a latência do seu canal, suba para 100
+            self.timeout_interval = max(100, calculated_timeout)
     def send_data_segment_and_start_timer(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
         
@@ -223,45 +226,43 @@ class Host:
         self.channel.send(segment, sender=self, receiver=self.peer)
         
         timer_name = f"data_timeout_{self.name}"
+        self.bus.clock.cancel_timer(timer_name)
         self.bus.clock.set_timer(self.timeout_interval, lambda: self.fsm.process_event("timeout", {"type": "DATA_TIMEOUT"}), timer_name)
 
     def process_new_ack(self, packet):
+        self.dup_ack_count = 0
         ack_received = packet.get("ack_num")
         if ack_received is None:
             return
         
-        # Todos os segmentos com 'seq' menor que o ACK recebido foram entregues com sucesso
         acknowledged = [item for item in self.unacked_segments if item["segment"]["seq"] < ack_received]
-        
-        # Mantém na janela apenas os que ainda não foram confirmados
         self.unacked_segments = [item for item in self.unacked_segments if item["segment"]["seq"] >= ack_received]
         
         if acknowledged:
             self.cancel_all_timers()
-            sample_rtt = self.bus.clock.get_time() - acknowledged[-1]["send_time"]
-            self.update_rtt(sample_rtt)
+            
+            if not acknowledged[-1].get("retransmitted", False):
+                sample_rtt = self.bus.clock.get_time() - acknowledged[-1]["send_time"]
+                self.update_rtt(sample_rtt)
             
             timer_name = f"data_timeout_{self.name}"
-            
-            # Se a janela de pacotes não confirmados não estiver vazia, reinicia o temporizador
             if self.unacked_segments:
                 self.bus.clock.set_timer(self.timeout_interval, lambda: self.fsm.process_event("timeout", {"type": "DATA_TIMEOUT"}), timer_name)
 
     def send_cumulative_ack(self, packet=None):
         if self.peer is None: raise ValueError("peer is required")
         
-        # O argumento 'packet' (passado pelo motor FSM) contém o segmento recebido
         if isinstance(packet, dict) and "seq" in packet:
+            pkt_seq = packet["seq"]
             payload = packet.get("payload")
             payload_len = len(payload) if payload else 1
             
-            # O ACK em TCP indica o PRÓXIMO byte/sequência que o Host espera receber
-            expected_seq = packet["seq"] + payload_len
-            
-            # Atualiza o ack_num apenas se o pacote recebido avançar a janela
-            self.ack_num = max(self.ack_num, expected_seq)
-        else:
-            self.ack_num += 1
+            # Pacote recebido na ordem exata esperada
+            if pkt_seq == self.ack_num:
+                if payload is not None:
+                    self.app_buffer.append(payload)
+                self.ack_num += payload_len
+            # Se for pacote duplicado/fora de ordem, envia o self.ack_num atual silenciosamente como 'duplicate ACK'
             
         self.duplicate_ack_count = 0 
         self.send_ack_segment()
@@ -274,10 +275,17 @@ class Host:
         if self.peer is None: raise ValueError("peer is required")
         if self.unacked_segments:
             oldest_item = self.unacked_segments[0]
+            
+            # MARCADOR: Identifica que o pacote sofreu retransmissão
+            oldest_item["retransmitted"] = True 
+            
             segment_to_send = oldest_item["segment"] if isinstance(oldest_item, dict) and "segment" in oldest_item else oldest_item
             
             self.channel.send(segment_to_send, sender=self, receiver=self.peer)
-
+            
+            timer_name = f"data_timeout_{self.name}"
+            self.bus.clock.cancel_timer(timer_name)
+            self.bus.clock.set_timer(self.timeout_interval, lambda: self.fsm.process_event("timeout", {"type": "DATA_TIMEOUT"}), timer_name)
     # ==========================================
     # UDP
     # ==========================================
@@ -310,9 +318,6 @@ class Host:
         }
         self.channel.send(datagram, sender=self, receiver=self.peer)
 
-    def resend_syn_ack_segment(self, data=None):
-        self.send_syn_ack_segment()
-
     def cancel_all_timers(self):
         timer_syn = f"syn_timeout_{self.name}"
         timer_fin = f"fin_timeout_{self.name}"
@@ -323,3 +328,19 @@ class Host:
         self.bus.clock.cancel_timer(timer_fin)
         self.bus.clock.cancel_timer(timer_data)
         self.bus.clock.cancel_timer(timer_2msl)
+
+    def is_duplicate_ack(self, event_data):
+        """Verifica se o pacote recebido é um ACK duplicado."""
+        if not self.is_ack(event_data):
+            return False
+        
+        ack_num = event_data.get('ack_num')
+        return ack_num is not None and ack_num == self.last_received_ack_num
+
+    def resend_syn_ack_segment(self, event_data=None):
+        # send_syn_ack_segment já agenda o timer correto no bus.clock
+        self.send_syn_ack_segment(event_data)
+
+    def ignore(self, event_data=None):
+        """Ação nula para descartar/ignorar eventos pacificamente."""
+        pass

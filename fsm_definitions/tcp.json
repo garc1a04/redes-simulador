@@ -146,6 +146,13 @@
                     "action": "send_ack_segment",
                     "next_state": "ESTABLISHED",
                     "documentation": "Trata SYN-ACKs duplicados atrasados na rede."
+                },
+                {
+                    "event": "channel_receive_segment",
+                    "condition": "is_duplicate_ack",
+                    "action": "ignore",
+                    "next_state": "ESTABLISHED",
+                    "documentation": "Ignora pacificamente o 1º, 2º e os ACKs duplicados subsequentes ao 3º."
                 }
             ]
         },
