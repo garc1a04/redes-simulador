@@ -124,7 +124,11 @@ class Host:
 
     def send_syn_segment(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
-        self.channel.send({"type": "SYN", "src": self.name, "dst": self.peer.name, "seq": self.seq_num}, sender=self, receiver=self.peer)
+        
+        segment = {"type": "SYN", "src": self.name, "dst": self.peer.name, "seq": self.seq_num}
+        self.last_syn_segment = segment  # Guarda cópia do pacote original
+        
+        self.channel.send(segment, sender=self, receiver=self.peer)
         self.seq_num += 1  # SYN consome 1 número de sequência
         
         timer_name = f"syn_timeout_{self.name}"
@@ -132,24 +136,36 @@ class Host:
         self.bus.clock.set_timer(15, lambda: self.fsm.process_event("timeout", {"type": "SYN_TIMEOUT"}), timer_name)
 
     def resend_syn_segment(self, data=None):
-        self.send_syn_segment()
+        if hasattr(self, 'last_syn_segment') and self.last_syn_segment:
+            segment = dict(self.last_syn_segment)
+            segment["retransmitted"] = True
+            
+            self.channel.send(segment, sender=self, receiver=self.peer)
+            
+            timer_name = f"syn_timeout_{self.name}"
+            self.bus.clock.cancel_timer(timer_name)
+            self.bus.clock.set_timer(15, lambda: self.fsm.process_event("timeout", {"type": "SYN_TIMEOUT"}), timer_name)
+        else:
+            self.send_syn_segment()
 
     def send_syn_ack_segment(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
         
-        # O FSM mapeia diretamente para esta função. Atualizamos o ack_num baseando no pacote recebido.
         if isinstance(data, dict) and data.get("type") == "SYN":
             self.ack_num = data.get("seq", 0) + 1
         elif self.ack_num == 0:
             self.ack_num = 1
             
-        self.channel.send({"type": "SYN-ACK", "src": self.name, "dst": self.peer.name, "seq": self.seq_num}, sender=self, receiver=self.peer)
+        segment = {"type": "SYN-ACK", "src": self.name, "dst": self.peer.name, "seq": self.seq_num}
+        self.last_syn_ack_segment = segment  # Guarda cópia do pacote original
+        
         self.seq_num += 1  # SYN-ACK consome 1 número de sequência
+        self.channel.send(segment, sender=self, receiver=self.peer)
         
         timer_name = f"syn_timeout_{self.name}"
         self.bus.clock.cancel_timer(timer_name)
         self.bus.clock.set_timer(15, lambda: self.fsm.process_event("timeout", {"type": "SYN_TIMEOUT"}), timer_name)
-
+    
     def send_ack_segment(self, data=None):
         if self.peer is None: raise ValueError("peer is required")
         
@@ -337,9 +353,18 @@ class Host:
         ack_num = event_data.get('ack_num')
         return ack_num is not None and ack_num == self.last_received_ack_num
 
-    def resend_syn_ack_segment(self, event_data=None):
-        # send_syn_ack_segment já agenda o timer correto no bus.clock
-        self.send_syn_ack_segment(event_data)
+    def resend_syn_ack_segment(self, data=None):
+        if hasattr(self, 'last_syn_ack_segment') and self.last_syn_ack_segment:
+            segment = dict(self.last_syn_ack_segment)
+            segment["retransmitted"] = True
+            
+            self.channel.send(segment, sender=self, receiver=self.peer)
+            
+            timer_name = f"syn_timeout_{self.name}"
+            self.bus.clock.cancel_timer(timer_name)
+            self.bus.clock.set_timer(15, lambda: self.fsm.process_event("timeout", {"type": "SYN_TIMEOUT"}), timer_name)
+        else:
+            self.send_syn_ack_segment(data)
 
     def ignore(self, event_data=None):
         """Ação nula para descartar/ignorar eventos pacificamente."""
